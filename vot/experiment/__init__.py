@@ -5,7 +5,7 @@ import logging
 import typing
 from datetime import datetime
 from abc import abstractmethod
-
+import tqdm
 from class_registry import ClassRegistry
 
 from attributee import Attributee, Object, Integer, Float, Nested, List
@@ -13,7 +13,7 @@ from attributee import Attributee, Object, Integer, Float, Nested, List
 from vot import get_logger
 from vot.tracker import TrackerException
 from vot.utilities import Progress, to_number, import_class
-
+import multiprocessing as mp
 experiment_registry = ClassRegistry("vot_experiment")
 transformer_registry = ClassRegistry("vot_transformer")
 
@@ -282,6 +282,10 @@ class Experiment(Attributee):
 from .multirun import UnsupervisedExperiment, SupervisedExperiment
 from .multistart import MultiStartExperiment
 
+def run(args):
+    experiment, tracker, sequence = args
+    experiment.execute(tracker, sequence)
+
 def run_experiment(experiment: Experiment, tracker: "Tracker", sequences: typing.List["Sequence"], force: bool = False, persist: bool = False):
     """A helper function that performs a given experiment with a given tracker on a list of sequences.
 
@@ -332,26 +336,12 @@ def run_experiment(experiment: Experiment, tracker: "Tracker", sequences: typing
             """Close the progress bar."""
             self.bar.close()
 
-    logger = logging.getLogger("vot")
-
     transformed = []
     for sequence in sequences:
         transformed.extend(experiment.transform(sequence))
     sequences = transformed
 
-    progress = EvaluationProgress("{}/{}".format(tracker.identifier, experiment.identifier), len(sequences))
-    for sequence in sequences:
-        try:
-            experiment.execute(tracker, sequence, force=force, callback=progress)
-        except TrackerException as te:
-            logger.error("Tracker %s encountered an error: %s", te.tracker.identifier, te)
-            logger.debug(te, exc_info=True)
-            if not te.log is None:
-                with experiment.log(te.tracker.identifier) as flog:
-                    flog.write(te.log)
-                    logger.error("Tracker output written to file: %s", flog.name)
-            if not persist:
-                raise TrackerException("Experiment interrupted", te, tracker=tracker)
-        progress.push()
-
-    progress.close()
+    inputs = [(experiment, tracker, sequence) for sequence in sequences]
+    with mp.Pool(8) as pool:
+        list(tqdm.tqdm(pool.imap(run, inputs), total=len(inputs),
+                       desc="Evaluating {}".format(tracker.identifier)))
