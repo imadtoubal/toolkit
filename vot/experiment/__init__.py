@@ -283,8 +283,18 @@ from .multirun import UnsupervisedExperiment, SupervisedExperiment
 from .multistart import MultiStartExperiment
 
 def run(args):
-    experiment, tracker, sequence = args
-    experiment.execute(tracker, sequence)
+    _, (experiment, tracker, sequence, logger) = args
+    try:
+        experiment.execute(tracker, sequence)
+    except TrackerException as te:
+        logger.error("Tracker {} failed on sequence {} with error {}".format(tracker.identifier, sequence.identifier, te))
+        logger.debug(te, exc_info=True)
+        if not te.log is None:
+            with experiment.log(te.tracker.identifier) as flog:
+                flog.write(te.log)
+                logger.error("Tracker output written to file: %s", flog.name)
+
+        raise te
 
 def run_experiment(experiment: Experiment, tracker: "Tracker", sequences: typing.List["Sequence"], force: bool = False, persist: bool = False):
     """A helper function that performs a given experiment with a given tracker on a list of sequences.
@@ -340,8 +350,12 @@ def run_experiment(experiment: Experiment, tracker: "Tracker", sequences: typing
     for sequence in sequences:
         transformed.extend(experiment.transform(sequence))
     sequences = transformed
-
-    inputs = [(experiment, tracker, sequence) for sequence in sequences]
-    with mp.Pool(8) as pool:
+    logger = logging.getLogger("vot")
+    inputs = [(i, (experiment, tracker, sequence, logger))
+              for i, sequence in enumerate(sequences)]
+    n_procs = min(len(inputs), mp.cpu_count(), 8)
+    with mp.Pool(n_procs) as pool:
         list(tqdm.tqdm(pool.imap(run, inputs), total=len(inputs),
                        desc="Evaluating {}".format(tracker.identifier)))
+    # for input in tqdm.tqdm(inputs, total=len(inputs), desc="Evaluating {}".format(tracker.identifier)):
+    #     run(input)
